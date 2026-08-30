@@ -16,6 +16,7 @@ import { logger } from "../utils/logger";
 import {
   createSession,
   getSession,
+  refreshSession,
   addServiceMetadata,
   addInstanceTreeMetadata,
   getIndexData,
@@ -129,6 +130,7 @@ export async function handleSyncChunk(req: Request, res: Response): Promise<void
       } as ChunkResponse);
       return;
     }
+    refreshSession(body.sessionId);
 
     // Handle different chunk types
     if (body.type === "service") {
@@ -267,6 +269,7 @@ export async function handleSyncComplete(req: Request, res: Response): Promise<v
       } as SyncResponse);
       return;
     }
+    refreshSession(body.sessionId);
 
     logger.info(`Completing chunked sync session: ${body.sessionId.slice(0, 8)}...`);
     logger.info(`Final progress: ${getSessionProgress(body.sessionId)}`);
