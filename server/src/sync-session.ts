@@ -13,6 +13,7 @@ import { logger } from "./utils/logger";
 export interface SyncSession {
   id: string;
   startedAt: Date;
+  lastActivityAt: Date;
   writer: FileSystemWriter;
   flatIndex: Map<string, FlatMetaEntry>; // flat path -> {name, className}
   deepChunkCount: number;
@@ -35,12 +36,43 @@ const sessions = new Map<string, SyncSession>();
 // Write progress storage (separate from sessions for status polling)
 const writeProgress = new Map<string, WriteProgressInfo>();
 
-// Session timeout (10 minutes for large games)
+// Session timeout after the last received chunk.
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 
 // Callback to resume watcher on session cleanup
 type WatcherResumeCallback = () => void;
 const watcherResumeCallbacks = new Map<string, WatcherResumeCallback>();
+const sessionTimeouts = new Map<string, NodeJS.Timeout>();
+
+function cleanupSession(session: SyncSession): void {
+  const resumeCallback = watcherResumeCallbacks.get(session.id);
+  if (resumeCallback && session.watcherPaused) {
+    resumeCallback();
+  }
+  watcherResumeCallbacks.delete(session.id);
+  sessions.delete(session.id);
+  const timeout = sessionTimeouts.get(session.id);
+  if (timeout) {
+    clearTimeout(timeout);
+    sessionTimeouts.delete(session.id);
+  }
+}
+
+function scheduleSessionCleanup(session: SyncSession): void {
+  const existing = sessionTimeouts.get(session.id);
+  if (existing) {
+    clearTimeout(existing);
+  }
+
+  const timeout = setTimeout(() => {
+    if (sessions.has(session.id)) {
+      logger.info(`Session ${session.id} expired after inactivity and was cleaned up`);
+      cleanupSession(session);
+    }
+  }, SESSION_TIMEOUT_MS);
+
+  sessionTimeouts.set(session.id, timeout);
+}
 
 /**
  * Create a new sync session
@@ -53,6 +85,7 @@ export function createSession(
   const session: SyncSession = {
     id: randomUUID(),
     startedAt: new Date(),
+    lastActivityAt: new Date(),
     writer,
     flatIndex: new Map(),
     deepChunkCount: 0,
@@ -66,21 +99,23 @@ export function createSession(
     watcherResumeCallbacks.set(session.id, onWatcherResume);
   }
 
-  // Schedule cleanup after timeout
-  setTimeout(() => {
-    if (sessions.has(session.id)) {
-      logger.info(`Session ${session.id} expired and was cleaned up`);
-      // Resume watcher if it was paused
-      const resumeCallback = watcherResumeCallbacks.get(session.id);
-      if (resumeCallback && session.watcherPaused) {
-        resumeCallback();
-      }
-      watcherResumeCallbacks.delete(session.id);
-      sessions.delete(session.id);
-    }
-  }, SESSION_TIMEOUT_MS);
+  scheduleSessionCleanup(session);
 
   return session;
+}
+
+/**
+ * Mark a session as active and reset its inactivity timeout.
+ */
+export function refreshSession(sessionId: string): boolean {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return false;
+  }
+
+  session.lastActivityAt = new Date();
+  scheduleSessionCleanup(session);
+  return true;
 }
 
 /**
@@ -102,6 +137,7 @@ export function addServiceMetadata(
   if (!session) {
     return false;
   }
+  refreshSession(sessionId);
 
   // Extract flat metadata entries and merge into session's flat index
   const flat = extractFlatMetadata(serviceData, "");
@@ -126,6 +162,7 @@ export function addInstanceTreeMetadata(
   if (!session) {
     return false;
   }
+  refreshSession(sessionId);
 
   // Extract flat metadata with the parent path as prefix
   const flat = extractFlatMetadata(instanceData, parentPath);
@@ -153,6 +190,11 @@ export function getIndexData(sessionId: string): Map<string, IndexNode> | null {
  * Delete a session (cleanup)
  */
 export function deleteSession(sessionId: string): void {
+  const timeout = sessionTimeouts.get(sessionId);
+  if (timeout) {
+    clearTimeout(timeout);
+    sessionTimeouts.delete(sessionId);
+  }
   watcherResumeCallbacks.delete(sessionId);
   sessions.delete(sessionId);
 }
