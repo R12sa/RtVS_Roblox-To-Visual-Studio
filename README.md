@@ -14,12 +14,12 @@ The easiest way to install RtVS. Handles Node.js setup, plugin deployment, and o
 
 **Linux / macOS** - open a Terminal and run:
 ```bash
-sh -c "$(curl -sS https://raw.githubusercontent.com/CatMan6112/RtVS_Roblox-To-Visual-Studio/main/install.sh)"
+sh -c "$(curl -sS https://raw.githubusercontent.com/R12sa/RtVS_Roblox-To-Visual-Studio/main/install.sh)"
 ```
 
 **Windows** - open PowerShell and run:
 ```powershell
-irm https://raw.githubusercontent.com/CatMan6112/RtVS_Roblox-To-Visual-Studio/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/R12sa/RtVS_Roblox-To-Visual-Studio/main/install.ps1 | iex
 ```
 
 > On Windows, press `Win + R`, type `powershell`, and hit Enter to open PowerShell.
