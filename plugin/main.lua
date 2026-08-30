@@ -22,7 +22,8 @@ local MAX_CHUNK_SIZE = 800000
 local YIELD_INTERVAL = 100
 local objectsProcessed = 0
 
-local REQUEST_DELAY = 0.15
+local REQUEST_DELAY = 0.03
+local MAX_REQUEST_RETRIES = 3
 local lastRequestTime = 0
 
 local syncProgress = {
@@ -125,7 +126,7 @@ local function testConnection()
 		warn("OUTDATED PLUGIN")
 		warn("========================================")
 		warn("Outdated Plugin!! Please reinstall from GitHub:")
-		warn("https://github.com/CatMan6112/RtVS_Roblox-To-Visual-Studio")
+		warn("https://github.com/R12sa/RtVS_Roblox-To-Visual-Studio")
 		warn("")
 		warn("Download RtVS.rbxm and place it in your Plugins folder:")
 		warn("  Windows: %LOCALAPPDATA%\\Roblox\\Plugins\\")
@@ -145,7 +146,7 @@ local function testConnection()
 		warn("OUTDATED SERVER")
 		warn("========================================")
 		warn("Outdated Server!! Please Update Via Github at")
-		warn("https://github.com/CatMan6112/RtVS_Roblox-To-Visual-Studio/!!")
+		warn("https://github.com/R12sa/RtVS_Roblox-To-Visual-Studio/!!")
 		warn("Plugin Functionality has been Suspended!!")
 		warn("========================================")
 		warn("Plugin Version: " .. PLUGIN_VERSION)
@@ -172,7 +173,7 @@ local function testConnection()
 			warn("Latest Version:  " .. data.latestVersion)
 			warn("")
 			warn("Download the latest version from GitHub:")
-			warn("https://github.com/CatMan6112/RtVS_Roblox-To-Visual-Studio")
+			warn("https://github.com/R12sa/RtVS_Roblox-To-Visual-Studio")
 			warn("")
 			warn("Replace the plugin file in your Plugins folder:")
 			warn("  Windows: %LOCALAPPDATA%\\Roblox\\Plugins\\")
@@ -520,6 +521,38 @@ local function throttleRequest()
 	lastRequestTime = tick()
 end
 
+local function postJsonWithRetry(endpoint, jsonPayload, label)
+	local lastError = nil
+
+	for attempt = 1, MAX_REQUEST_RETRIES do
+		throttleRequest()
+
+		local success, response = pcall(function()
+			return HttpService:PostAsync(
+				SERVER_URL .. endpoint,
+				jsonPayload,
+				Enum.HttpContentType.ApplicationJson
+			)
+		end)
+
+		if success then
+			return true, response
+		end
+
+		lastError = response
+		if attempt < MAX_REQUEST_RETRIES then
+			warn(string.format("%s failed (attempt %d/%d), retrying: %s",
+				label,
+				attempt,
+				MAX_REQUEST_RETRIES,
+				tostring(response)))
+			task.wait(0.25 * attempt)
+		end
+	end
+
+	return false, lastError
+end
+
 -- Count estimated chunks needed for an instance tree
 local function countChunksNeeded(instanceData)
 	local count = 0
@@ -587,13 +620,11 @@ end
 
 -- Start a chunked sync session
 local function startChunkedSession(expectedServices)
-	local success, response = pcall(function()
-		return HttpService:PostAsync(
-			SERVER_URL .. "/sync/start",
-			HttpService:JSONEncode({ expectedServices = expectedServices }),
-			Enum.HttpContentType.ApplicationJson
-		)
-	end)
+	local success, response = postJsonWithRetry(
+		"/sync/start",
+		HttpService:JSONEncode({ expectedServices = expectedServices }),
+		"Starting sync session"
+	)
 
 	if success then
 		local data = HttpService:JSONDecode(response)
@@ -606,9 +637,6 @@ end
 
 -- Send a service chunk
 local function sendServiceChunk(sessionId, serviceName, serviceData)
-	-- Throttle to avoid rate limits
-	throttleRequest()
-
 	local payload = {
 		sessionId = sessionId,
 		type = "service",
@@ -627,13 +655,7 @@ local function sendServiceChunk(sessionId, serviceName, serviceData)
 		return false
 	end
 
-	local success, response = pcall(function()
-		return HttpService:PostAsync(
-			SERVER_URL .. "/sync/chunk",
-			jsonPayload,
-			Enum.HttpContentType.ApplicationJson
-		)
-	end)
+	local success, response = postJsonWithRetry("/sync/chunk", jsonPayload, "Sending service chunk")
 
 	if success then
 		local data = HttpService:JSONDecode(response)
@@ -669,13 +691,7 @@ local function sendWorkspaceChunk(sessionId, chunkIndex, totalChunks, children)
 		return false
 	end
 
-	local success, response = pcall(function()
-		return HttpService:PostAsync(
-			SERVER_URL .. "/sync/chunk",
-			jsonPayload,
-			Enum.HttpContentType.ApplicationJson
-		)
-	end)
+	local success, response = postJsonWithRetry("/sync/chunk", jsonPayload, "Sending Workspace chunk")
 
 	if success then
 		local data = HttpService:JSONDecode(response)
@@ -688,9 +704,6 @@ end
 
 -- Send a deep chunk (with path for nested objects)
 local function sendDeepChunk(sessionId, parentPath, instanceData, skipProgress)
-	-- Throttle to avoid rate limits
-	throttleRequest()
-
 	local payload = {
 		sessionId = sessionId,
 		type = "deep_chunk",
@@ -710,13 +723,7 @@ local function sendDeepChunk(sessionId, parentPath, instanceData, skipProgress)
 		return false
 	end
 
-	local success, response = pcall(function()
-		return HttpService:PostAsync(
-			SERVER_URL .. "/sync/chunk",
-			jsonPayload,
-			Enum.HttpContentType.ApplicationJson
-		)
-	end)
+	local success, response = postJsonWithRetry("/sync/chunk", jsonPayload, "Sending deep chunk")
 
 	if success then
 		local data = HttpService:JSONDecode(response)
@@ -754,13 +761,11 @@ local function completeChunkedSession(sessionId)
 	local lastStatusUpdate = 0
 
 	-- Send the complete request (now returns immediately, writes in background)
-	local success, response = pcall(function()
-		return HttpService:PostAsync(
-			SERVER_URL .. "/sync/complete",
-			HttpService:JSONEncode({ sessionId = sessionId }),
-			Enum.HttpContentType.ApplicationJson
-		)
-	end)
+	local success, response = postJsonWithRetry(
+		"/sync/complete",
+		HttpService:JSONEncode({ sessionId = sessionId }),
+		"Completing sync session"
+	)
 
 	if not success then
 		warn("Failed to start sync completion:", response)
@@ -1064,7 +1069,7 @@ local function readAllServices()
 			end
 
 			print("Started sync session: " .. string.sub(sessionId, 1, 8) .. "...")
-			print("Throttle delay: " .. REQUEST_DELAY .. "s between requests")
+	print("Request delay: " .. REQUEST_DELAY .. "s between requests")
 			print("")
 
 			-- Send each service
